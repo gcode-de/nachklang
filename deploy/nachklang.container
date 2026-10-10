@@ -1,0 +1,20 @@
+[Unit]
+Description=Nachklang web application
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+# Replace DOCKERHUB_USER and pin a tested release tag.
+Image=docker.io/DOCKERHUB_USER/nachklang:0.1.0
+ContainerName=nachklang
+PublishPort=127.0.0.1:3000:3000
+Volume=nachklang-data.volume:/data:U
+EnvironmentFile=%h/.config/nachklang.env
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=900
+
+[Install]
+WantedBy=default.target
