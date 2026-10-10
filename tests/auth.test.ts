@@ -7,6 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getMigrations } from "better-auth/db/migration";
 import { betterAuth } from "better-auth";
+import { hashPassword } from "better-auth/crypto";
+import { getCurrentAdapter } from "@better-auth/core/context";
+import Database from "better-sqlite3";
 import { auth, authOptions } from "../lib/auth";
 import { db, migrateApp } from "../lib/database";
 import { GET, POST } from "../app/api/dashboard/route";
@@ -23,6 +26,7 @@ process.env.SMTP_HOST = "127.0.0.1";
 process.env.SMTP_FROM = "Nachklang <local@example.test>";
 process.env.SMTP_ALLOW_INSECURE = "true";
 const received: string[] = [];
+let onMailReceived: (() => void) | undefined;
 const sockets = new Set<Socket>();
 // Minimal local SMTP sink: no external delivery and no extra test dependency.
 const server = createServer((socket) => {
@@ -40,6 +44,7 @@ const server = createServer((socket) => {
       buffer = buffer.slice(index + 2);
       if (data) {
         if (line === ".") {
+          onMailReceived?.();
           received.push(body);
           body = "";
           data = false;
@@ -55,6 +60,7 @@ const server = createServer((socket) => {
     }
   });
 });
+
 const password = "test-password-only-2026!";
 let clientIp = "192.0.2.10";
 function request(
@@ -102,6 +108,71 @@ after(async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+test("registration reserves the writer before hashing and releases it before SMTP", async () => {
+  const writer = new Database(process.env.DATABASE_PATH!);
+  writer.pragma("busy_timeout = 0");
+  let blockedDuringHash = false;
+  let mailWriteError: unknown;
+  let wroteDuringMail = false;
+  const options = authOptions();
+  const isolatedAuth = betterAuth({
+    ...options,
+    emailAndPassword: {
+      ...options.emailAndPassword,
+      password: {
+        hash: async (value) => {
+          const adapter = await getCurrentAdapter((await isolatedAuth.$context).adapter);
+          await adapter.findOne({
+            model: "user",
+            where: [{ field: "email", value: "concurrent@example.test" }],
+          });
+          try {
+            writer.prepare("UPDATE worker SET last_tick = 123 WHERE id = 1").run();
+          } catch (error) {
+            assert.equal((error as { code: string }).code, "SQLITE_BUSY");
+            blockedDuringHash = true;
+          }
+          return hashPassword(value);
+        },
+        verify: async () => false,
+      },
+    },
+  });
+  onMailReceived = () => {
+    try {
+      writer.prepare("UPDATE worker SET last_tick = 124 WHERE id = 1").run();
+      wroteDuringMail = true;
+    } catch (error) {
+      mailWriteError = error;
+    }
+  };
+  try {
+    const response = await isolatedAuth.handler(
+      request("/api/auth/sign-up/email", {
+        name: "Concurrent owner",
+        email: "concurrent@example.test",
+        password,
+      }),
+    );
+    assert.equal(response.status, 200);
+    assert.equal(blockedDuringHash, true);
+    assert.equal(mailWriteError, undefined);
+    assert.equal(wroteDuringMail, true);
+    const user = writer
+      .prepare("SELECT id FROM user WHERE email = ?")
+      .get("concurrent@example.test") as { id: string };
+    assert.ok(user);
+    const credentials = writer
+      .prepare("SELECT COUNT(*) AS n FROM account WHERE userId = ?")
+      .get(user.id) as { n: number };
+    assert.equal(credentials.n, 1);
+    writer.prepare("DELETE FROM user WHERE id = ?").run(user.id);
+    received.pop();
+  } finally {
+    onMailReceived = undefined;
+    writer.close();
+  }
+});
 test("real auth, owner isolation, CSRF, check link and SMTP delivery", async () => {
   const signup = await auth().handler(
     request("/api/auth/sign-up/email", {

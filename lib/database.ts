@@ -5,14 +5,19 @@ import { dirname } from "node:path";
 let connection: Database.Database | undefined;
 export function db() {
   if (!connection) {
-    const path = process.env.DATABASE_PATH || "data/nachklang.sqlite";
-    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    connection = new Database(path);
-    connection.pragma("journal_mode = WAL");
-    connection.pragma("foreign_keys = ON");
-    connection.pragma("busy_timeout = 5000");
+    connection = openDatabase();
   }
   return connection;
+}
+
+export function openDatabase() {
+  const path = process.env.DATABASE_PATH || "data/nachklang.sqlite";
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const database = new Database(path);
+  database.pragma("journal_mode = WAL");
+  database.pragma("foreign_keys = ON");
+  database.pragma("busy_timeout = 5000");
+  return database;
 }
 
 export function migrateApp() {

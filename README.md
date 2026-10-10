@@ -152,3 +152,14 @@ The checked-in `deploy/homelab/` units target the existing rootful Podman LXC 11
 The homelab's existing backup system is used, without an additional backup job. Ensure that it actually includes the persistent data volume and `/etc/nachklang.env` (which contains the encryption key).
 
 The concrete deployed setup and remaining credential/account steps are documented in [deploy/homelab/README.md](deploy/homelab/README.md). Quadlet defines its healthcheck explicitly and restarts an unhealthy container through systemd.
+
+## SQLite concurrency fix (0.3.1)
+
+Authentication uses its own SQLite connection and starts transactions with
+`BEGIN IMMEDIATE`, reserving the writer before asynchronous password hashing.
+This prevents a worker update from invalidating a registration's WAL snapshot.
+Verification email is sent after the transaction commits, so SMTP latency does
+not hold the writer lock. Existing accounts and encrypted messages are preserved.
+
+The regression test reproduces `SQLITE_BUSY_SNAPSHOT` with deferred transactions,
+then verifies successful registration and worker writes during SMTP with the fix.

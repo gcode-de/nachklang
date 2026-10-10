@@ -1,6 +1,6 @@
 # Existing homelab deployment
 
-Deployed 2026-10-10 with `docker.io/sgesang/nachklang:0.3.0`.
+Deployed 2026-10-10 with `docker.io/sgesang/nachklang:0.3.1`.
 
 - App: Proxmox pve1 (`192.168.68.211`), Podman LXC 114 (`192.168.68.194`).
 - Public URL: https://nachklang.samuelgesang.de
