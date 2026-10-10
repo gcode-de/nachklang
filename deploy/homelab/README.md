@@ -6,7 +6,7 @@ Deployed 2026-10-10 with `docker.io/sgesang/nachklang:0.3.0`.
 - Public URL: https://nachklang.samuelgesang.de
 - Private origin: http://192.168.68.194:4176
 - Runtime secrets: `/etc/nachklang.env` inside LXC 114, mode 600.
-- Persistent volume: `nachklang-data`. The homelab's existing backup covers the container filesystem; no additional backup job was installed.
+- Persistent volume: `nachklang-data`. The existing homelab backup is used; its coverage was not changed or audited, and no additional backup job was installed.
 - Web startup: `/etc/containers/systemd/nachklang.container` and `.volume` generate the systemd service and boot dependency.
 - Worker: `/etc/systemd/system/nachklang-worker.service` and `.timer`, every five minutes.
 - Tunnel replicas: LXC 119 on pve1 and LXC 121 on pve3 (`192.168.68.213`). Both existing `/etc/cloudflared/config.yml` files contain the new hostname route. Future route changes must reach both replicas.
@@ -41,3 +41,5 @@ curl --fail https://nachklang.samuelgesang.de/api/health
 ```
 
 Update deliberately by changing the release tag in the Quadlet, reloading systemd and restarting the app. Preserve the data volume and both keys. The worker automatically retries pending Telegram alerts, throttled to ten-minute intervals. Successful SMTP acceptance is not proof of inbox delivery; later bounces still require provider-side observation.
+
+Verified on the public URL: health returns 200, login renders in Safari with no signup action, unauthenticated dashboard API returns 401, and signup API rejects the synthetic probe with `EMAIL_PASSWORD_SIGN_UP_DISABLED` (400). Both existing tunnel connectors are active with the new route.
