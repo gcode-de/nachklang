@@ -10,9 +10,17 @@ PublishPort=192.168.68.194:4176:3000
 Volume=nachklang-data.volume:/data:U
 EnvironmentFile=/etc/nachklang.env
 NoNewPrivileges=true
+Notify=healthy
+HealthCmd=["node","-e","fetch(\"http://127.0.0.1:3000/api/health\").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+HealthInterval=30s
+HealthTimeout=5s
+HealthStartPeriod=30s
+HealthRetries=3
+HealthOnFailure=kill
 
 [Service]
 Restart=on-failure
+RestartSec=5
 TimeoutStartSec=900
 
 [Install]
