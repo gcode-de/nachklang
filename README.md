@@ -130,3 +130,23 @@ A check has no deadline while SMTP is in progress. The countdown is committed on
 **Testmail senden** sends only to the signed-in account, at most once per minute. An explicit confirmation link (24-hour validity, single use, POST only) records receipt independently of the life check. SMTP acceptance alone is labelled as such. This is an inbox test, not a guarantee of future delivery: configure SPF/DKIM/DMARC, check spam, and monitor provider bounces. Automated bounce processing is not included.
 
 Upgrading from 0.1.0 adds columns and a mail-test table without deleting messages. Existing awaiting/released timers are paused once during migration, because the previous schema cannot prove a safely committed check send. Review your dashboard, test your mail route, then reactivate monthly checks. Back up the database and encryption key before updating. The default UI is dark with a persistent light-mode switch; fonts are local system sans-serif fonts.
+
+## Admin alerts and private registration (0.3.0)
+
+Runtime configuration (not CI secrets):
+
+```ini
+TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN
+TELEGRAM_CHAT_ID=YOUR_CHAT_ID
+ALLOW_REGISTRATION=false
+```
+
+Every direct SMTP error queues an admin alert, including missing SMTP configuration, verification/reset emails, checks, reminders, mailtests and recipient messages. Telegram receives only a failure count, time and dashboard URL; no recipient addresses, message contents or exception text. Pending alerts persist in SQLite. The first alert is attempted immediately, further attempts are limited to one per ten minutes and the regular worker retries pending alerts. A Telegram failure cannot turn an SMTP failure into success or change a life timer. Missing Telegram configuration retains pending alerts for later delivery. A process crash during an ambiguous recipient send still cannot prove SMTP delivery. Later provider bounces are not automatically detected.
+
+Start the bot conversation in Telegram and run `podman exec nachklang node --import tsx scripts/test-telegram.ts` after configuring and restarting the container. The Telegram Bot API token is never logged. This test sends one explicit admin-channel test message and does not modify life checks.
+
+`ALLOW_REGISTRATION=false` disables signup on both the API and login page. Existing accounts can log in, verify their address and reset their password. For first setup, open registration briefly, create/verify your account and close it again. No production account or password is automatically created.
+
+The checked-in `deploy/homelab/` units target the existing rootful Podman LXC 114 (192.168.68.194) via Proxmox pve1 (192.168.68.211). Install the Quadlet files under `/etc/containers/systemd/` and the worker units under `/etc/systemd/system/`. Secrets live in `/etc/nachklang.env` with mode 600; the data is in the `nachklang-data` Podman volume. The cloudflared connector is LXC 119 (192.168.68.242), so its route points to `http://192.168.68.194:4176`, not localhost. No router port forwarding is needed. An exact release tag is pinned; deployment updates remain deliberate.
+
+The homelab's existing backup system is used, without an additional backup job. Ensure that it actually includes the persistent data volume and `/etc/nachklang.env` (which contains the encryption key).

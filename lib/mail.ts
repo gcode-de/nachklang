@@ -1,3 +1,4 @@
+import { recordMailFailure, flushAdminAlerts } from "./admin-alerts";
 import nodemailer from "nodemailer";
 
 export type Mail = {
@@ -7,6 +8,21 @@ export type Mail = {
   messageId?: string;
 };
 export async function sendMail(mail: Mail) {
+  try {
+    await deliverMail(mail);
+  } catch (error) {
+    try {
+      recordMailFailure();
+      await flushAdminAlerts();
+    } catch {
+      console.error(
+        "Mailfehler konnte nicht für den Admin-Alarm gespeichert werden.",
+      );
+    }
+    throw error;
+  }
+}
+async function deliverMail(mail: Mail) {
   if (!process.env.SMTP_HOST || !process.env.SMTP_FROM) {
     throw new Error("SMTP_HOST und SMTP_FROM müssen eingerichtet sein.");
   }

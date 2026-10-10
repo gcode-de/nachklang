@@ -61,6 +61,14 @@ export default function About() {
         automatische Wiederholung. Bereits versendete Nachrichten bleiben als
         versendet markiert.
       </p>
+      <h2>Admin-Benachrichtigungen.</h2>
+      <p>
+        Wenn der Betreiber Telegram eingerichtet hat, werden direkte Fehler beim
+        E-Mail-Versand über diesen zusätzlichen Kanal gemeldet. Dabei werden
+        Fehleranzahl, Zeitpunkt und die Adresse des Dashboards übertragen, keine
+        Nachrichtentexte oder Empfängeradressen. Ausstehende Hinweise werden
+        gespeichert und bei einem Ausfall später erneut versucht.
+      </p>
       <h2>Daten löschen.</h2>
       <p>
         Nachrichten können einzeln gelöscht werden. Über die Kontoeinstellungen

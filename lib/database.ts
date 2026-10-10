@@ -40,6 +40,10 @@ export function migrateApp() {
       id INTEGER PRIMARY KEY CHECK(id = 1), last_tick INTEGER, lease_until INTEGER NOT NULL DEFAULT 0
     );
     INSERT OR IGNORE INTO worker(id) VALUES (1);
+    CREATE TABLE IF NOT EXISTS admin_alert (
+      id INTEGER PRIMARY KEY CHECK(id = 1), pending_count INTEGER NOT NULL DEFAULT 0,
+      first_failure INTEGER, last_failure INTEGER, last_attempt INTEGER, last_sent INTEGER
+    );
     CREATE TABLE IF NOT EXISTS mail_probe (
       user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
       token_hash TEXT UNIQUE, requested_at INTEGER NOT NULL,

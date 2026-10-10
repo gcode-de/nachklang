@@ -1,0 +1,19 @@
+[Unit]
+Description=Nachklang web application
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=docker.io/sgesang/nachklang:0.3.0
+ContainerName=nachklang
+PublishPort=192.168.68.194:4176:3000
+Volume=nachklang-data.volume:/data:U
+EnvironmentFile=/etc/nachklang.env
+NoNewPrivileges=true
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

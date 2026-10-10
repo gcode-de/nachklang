@@ -1,0 +1,8 @@
+[Unit]
+Description=Nachklang checks and mail delivery
+Requires=nachklang.service
+After=nachklang.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/podman exec nachklang node --import tsx scripts/worker.ts

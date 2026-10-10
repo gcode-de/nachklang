@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getMigrations } from "better-auth/db/migration";
+import { betterAuth } from "better-auth";
 import { auth, authOptions } from "../lib/auth";
 import { db, migrateApp } from "../lib/database";
 import { GET, POST } from "../app/api/dashboard/route";
@@ -360,4 +361,27 @@ test("body limit holds without a Content-Length header", async () => {
     ),
     /zu groß/,
   );
+});
+
+test("closed registration rejects API signup without creating a user", async () => {
+  process.env.ALLOW_REGISTRATION = "false";
+  try {
+    const privateAuth = betterAuth(authOptions());
+    const response = await privateAuth.handler(
+      request("/api/auth/sign-up/email", {
+        name: "Blocked",
+        email: "blocked@example.test",
+        password,
+      }),
+    );
+    assert.equal(response.status, 400);
+    assert.equal(
+      db()
+        .prepare("SELECT id FROM user WHERE email = 'blocked@example.test'")
+        .get(),
+      undefined,
+    );
+  } finally {
+    delete process.env.ALLOW_REGISTRATION;
+  }
 });

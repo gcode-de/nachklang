@@ -19,6 +19,7 @@ export function authOptions() {
     trustedOrigins: [appUrl()],
     emailAndPassword: {
       enabled: true,
+      disableSignUp: process.env.ALLOW_REGISTRATION === "false",
       requireEmailVerification: true,
       minPasswordLength: 12,
       sendResetPassword: async ({ user, url }) => {
