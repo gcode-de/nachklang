@@ -28,7 +28,7 @@ podman exec nachklang node --import tsx scripts/test-telegram.ts
 
 For first account setup only, change `ALLOW_REGISTRATION=false` to `true`, restart the service, create your account at the public login page and confirm its verification email. Set it back to `false` and restart again. No production account or password has been created automatically. No real messages are present.
 
-Run the dashboard mailtest and explicitly confirm receipt. Keep monthly checks disabled until this works. Test recipient dispatch only with your own test recipient. Real SMTP delivery, Telegram delivery and later provider bounces cannot be validated before credentials are supplied.
+Run the dashboard mailtest and explicitly confirm receipt. Keep monthly checks disabled until this works. Test recipient dispatch only with your own test recipient. Telegram failure notification was confirmed by the administrator. SMTP currently rejects authentication with an hourly sending-limit notice; actual email receipt and later provider bounces remain unverified.
 
 ## Operations
 
@@ -43,3 +43,12 @@ curl --fail https://nachklang.samuelgesang.de/api/health
 Update deliberately by changing the release tag in the Quadlet, reloading systemd and restarting the app. Preserve the data volume and both keys. The worker automatically retries pending Telegram alerts, throttled to ten-minute intervals. Successful SMTP acceptance is not proof of inbox delivery; later bounces still require provider-side observation.
 
 Verified on the public URL: health returns 200, login renders in Safari with no signup action, unauthenticated dashboard API returns 401, and signup API rejects the synthetic probe with `EMAIL_PASSWORD_SIGN_UP_DISABLED` (400). Both existing tunnel connectors are active with the new route.
+
+## SQLite fix deployed (0.3.1)
+
+Version 0.3.1 was deployed on 2026-10-10 after all 31 CI tests, typecheck, build
+and Docker Hub publication succeeded. The runtime driver was checked without
+creating a production account or sending mail: it reserves the writer before
+reads and rolls back the probe. SQLite quick-check passed, foreign-key checks
+reported no errors, and the existing account and password credential remained.
+The public health endpoint and a worker run succeeded. Registration stays closed.
