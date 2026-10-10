@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Container]
 # Replace DOCKERHUB_USER and pin a tested release tag.
-Image=docker.io/DOCKERHUB_USER/nachklang:0.1.0
+Image=docker.io/DOCKERHUB_USER/nachklang:0.2.0
 ContainerName=nachklang
 PublishPort=127.0.0.1:3000:3000
 Volume=nachklang-data.volume:/data:U

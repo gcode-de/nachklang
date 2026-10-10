@@ -16,6 +16,10 @@ export type Life = {
   confirmed_at: number | null;
   released_at: number | null;
   token_hash: string | null;
+  check_sent_at: number | null;
+  check_inflight: number | null;
+  check_failed_at: number | null;
+  reminder_stage: number | null;
 };
 export type Payload = {
   recipientName: string;
@@ -63,7 +67,7 @@ export function confirm(userId: string, now = Date.now()) {
     life(userId);
     db()
       .prepare(
-        "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, confirmed_at = ?, released_at = NULL WHERE user_id = ?",
+        "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, confirmed_at = ?, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
       )
       .run(nextMonth(now), now, userId);
     event(userId, "confirmed", now);
@@ -74,7 +78,7 @@ export function disable(userId: string) {
     life(userId);
     db()
       .prepare(
-        "UPDATE life SET state = 'disabled', next_check = NULL, deadline = NULL, token_hash = NULL, released_at = NULL WHERE user_id = ?",
+        "UPDATE life SET state = 'disabled', next_check = NULL, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
       )
       .run(userId);
     event(userId, "disabled");
@@ -108,6 +112,12 @@ export async function tick(
     db()
       .prepare("UPDATE message SET status = 'failed' WHERE status = 'sending'")
       .run();
+    // An interrupted check send must never leave a countdown running.
+    db()
+      .prepare(
+        "UPDATE life SET token_hash = NULL, deadline = NULL, check_inflight = NULL, next_check = ? WHERE state = 'active' AND check_inflight = 1",
+      )
+      .run(now);
     if (!worker.last_tick || now - worker.last_tick > OUTAGE_WINDOW) {
       const rows = db()
         .prepare(
@@ -117,7 +127,7 @@ export async function tick(
       for (const row of rows) {
         db()
           .prepare(
-            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, released_at = NULL WHERE user_id = ?",
+            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
           )
           .run(now, row.user_id);
         event(row.user_id, "outage_reset", now);
@@ -145,9 +155,9 @@ export async function tick(
       const hash = tokenHash(token);
       const claimed = db()
         .prepare(
-          "UPDATE life SET state = 'awaiting', token_hash = ?, deadline = ? WHERE user_id = ? AND state = 'active' AND next_check <= ?",
+          "UPDATE life SET token_hash = ?, deadline = NULL, check_inflight = 1 WHERE user_id = ? AND state = 'active' AND next_check <= ?",
         )
-        .run(hash, now + REPLY_WINDOW, check.user_id, now);
+        .run(hash, check.user_id, now);
       if (!claimed.changes) continue;
       try {
         await deliver({
@@ -155,14 +165,52 @@ export async function tick(
           subject: "Nachklang: Bitte bestätige, dass es dir gut geht",
           text: `Bitte bestätige innerhalb von sieben Tagen, dass du noch lebst. Ohne Bestätigung gibt Nachklang deine vorbereiteten Nachrichten zum Versand frei.\n\n${appUrl()}/confirm?token=${token}\n\nDer Link öffnet zunächst eine Bestätigungsseite. Alternativ kannst du dich im Dashboard melden.`,
         });
-        event(check.user_id, "check_sent", now);
+        const started = db()
+          .prepare(
+            "UPDATE life SET state = 'awaiting', deadline = ?, check_sent_at = ?, check_inflight = NULL, check_failed_at = NULL, reminder_stage = 0 WHERE user_id = ? AND state = 'active' AND token_hash = ? AND check_inflight = 1",
+          )
+          .run(now + REPLY_WINDOW, now, check.user_id, hash);
+        if (started.changes) event(check.user_id, "check_sent", now);
       } catch {
         db()
           .prepare(
-            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL WHERE user_id = ? AND token_hash = ?",
+            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, check_inflight = NULL, check_failed_at = ? WHERE user_id = ? AND token_hash = ?",
           )
-          .run(now + 15 * 60_000, check.user_id, hash);
+          .run(now + 15 * 60_000, now, check.user_id, hash);
         event(check.user_id, "check_failed", now);
+      }
+    }
+    const reminders = db()
+      .prepare(
+        "SELECT life.*, user.email FROM life JOIN user ON user.id = life.user_id WHERE state = 'awaiting' AND deadline > ? AND deadline <= ?",
+      )
+      .all(now, now + 4 * DAY) as (Life & { email: string })[];
+    for (const check of reminders) {
+      const stage = check.deadline! - now <= DAY ? 2 : 1;
+      if ((check.reminder_stage || 0) >= stage) continue;
+      renew();
+      try {
+        await deliver({
+          to: check.email,
+          subject: "Nachklang: Dein Countdown läuft – bitte melde dich",
+          text: `Dein Lebenszeichen fehlt. Die Antwortfrist endet am ${new Date(check.deadline!).toISOString()}. Stoppe den Countdown direkt im Dashboard: ${appUrl()}/dashboard
+
+Dort kannst du auch die monatliche Prüfung vollständig pausieren.`,
+        });
+        db()
+          .prepare(
+            "UPDATE life SET reminder_stage = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ?",
+          )
+          .run(stage, check.user_id, check.token_hash);
+        event(check.user_id, "reminder_sent", now);
+      } catch {
+        // A known delivery problem must not release personal messages.
+        const stopped = db()
+          .prepare(
+            "UPDATE life SET state = 'disabled', deadline = NULL, next_check = NULL, token_hash = NULL, check_failed_at = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ?",
+          )
+          .run(now, check.user_id, check.token_hash);
+        if (stopped.changes) event(check.user_id, "reminder_failed", now);
       }
     }
     db().transaction(() => {

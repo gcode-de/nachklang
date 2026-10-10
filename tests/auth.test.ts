@@ -237,6 +237,48 @@ test("real auth, owner isolation, CSRF, check link and SMTP delivery", async () 
   await tick(now + 1);
   assert.equal(received.length, 3);
 });
+test("authenticated mailtest records explicit receipt and never changes life state", async () => {
+  clientIp = "192.0.2.19";
+  const login = await auth().handler(
+    request("/api/auth/sign-in/email", {
+      email: "owner@example.test",
+      password,
+    }),
+  );
+  const cookie = cookies(login);
+  const initial = received.length;
+  assert.equal(
+    (await POST(request("/api/dashboard", { action: "test_mail" }, cookie)))
+      .status,
+    200,
+  );
+  const url = mailUrl(
+    initial,
+    /http:\/\/localhost:3000\/confirm\?kind=mail&token=[a-f0-9]{64}/,
+  );
+  const form = new FormData();
+  form.set("kind", "mail");
+  form.set("token", new URL(url).searchParams.get("token")!);
+  const result = await confirmRoute(
+    new Request("http://localhost:3000/api/confirm", {
+      method: "POST",
+      headers: { origin: "http://localhost:3000" },
+      body: form,
+    }),
+  );
+  assert.match(result.headers.get("location")!, /result=ok&kind=mail/);
+  const snapshot = await (
+    await GET(request("/api/dashboard", undefined, cookie))
+  ).json();
+  assert.ok(snapshot.mailTest.received_at);
+  assert.equal(snapshot.life.state, "released");
+  assert.equal(snapshot.life.token_hash, undefined);
+  assert.equal(
+    (await POST(request("/api/dashboard", { action: "test_mail" }, cookie)))
+      .status,
+    400,
+  );
+});
 test("password reset sends a usable token and revokes the old password", async () => {
   clientIp = "192.0.2.20";
   const initial = received.length;

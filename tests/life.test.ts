@@ -227,3 +227,93 @@ test("deleting a user cascades to encrypted messages and state", () => {
   assert.equal(db().prepare("SELECT * FROM message").all().length, 0);
   assert.equal(db().prepare("SELECT * FROM life").all().length, 0);
 });
+
+test("countdown starts only after SMTP acceptance; manual stop during send wins", async () => {
+  confirm("owner", now - 40 * DAY);
+  await tick(now, async () => {
+    assert.equal(life("owner").state, "active");
+    assert.equal(life("owner").deadline, null);
+    disable("owner");
+  });
+  assert.equal(life("owner").state, "disabled");
+  assert.equal(life("owner").deadline, null);
+});
+test("an interrupted check send is recovered without releasing messages", async () => {
+  confirm("owner", now - 40 * DAY);
+  addMessage();
+  db()
+    .prepare(
+      "UPDATE life SET check_inflight = 1, token_hash = ? WHERE user_id = 'owner'",
+    )
+    .run(tokenHash("c".repeat(64)));
+  await tick(now, deliver);
+  assert.equal(mails.length, 1);
+  assert.equal(mails[0].to, "sam@example.test");
+  assert.equal(life("owner").deadline, now + REPLY_WINDOW);
+});
+test("reminders happen once per stage; known mail failure pauses the countdown", async () => {
+  awaiting(now + 4 * DAY);
+  addMessage();
+  await tick(now, deliver);
+  await tick(now + 1, deliver);
+  assert.equal(mails.length, 1);
+  assert.equal(life("owner").reminder_stage, 1);
+  db()
+    .prepare("UPDATE life SET deadline = ? WHERE user_id = 'owner'")
+    .run(now + DAY);
+  await tick(now + 2, async () => {
+    throw new Error("SMTP rejected");
+  });
+  assert.equal(life("owner").state, "disabled");
+  assert.equal(life("owner").deadline, null);
+  await tick(now + 3, deliver);
+  assert.equal(mails.length, 1);
+});
+test("pausing an expired or released timer stops all unclaimed messages", async () => {
+  awaiting();
+  addMessage();
+  db()
+    .prepare("UPDATE life SET state = 'released' WHERE user_id = 'owner'")
+    .run();
+  disable("owner");
+  await tick(now, deliver);
+  assert.equal(mails.length, 0);
+});
+test("mailtest proves explicit receipt without changing life state; expires and limits requests", async () => {
+  const { testMail, confirmMailTest } = await import("../lib/mail-test");
+  await testMail("owner", "sam@example.test", now, deliver);
+  const token = mails[0].text.match(/token=([a-f0-9]{64})/)![1];
+  assert.equal(life("owner").state, "disabled");
+  assert.ok(
+    (
+      db().prepare("SELECT accepted_at FROM mail_probe").get() as {
+        accepted_at: number;
+      }
+    ).accepted_at,
+  );
+  await assert.rejects(testMail("owner", "sam@example.test", now + 1, deliver));
+  assert.equal(confirmMailTest(token, now), true);
+  assert.equal(confirmMailTest(token, now), false);
+  assert.equal(life("owner").state, "disabled");
+  await testMail("owner", "sam@example.test", now + 60_000, deliver);
+  const expired = mails[1].text.match(/token=([a-f0-9]{64})/)![1];
+  assert.equal(confirmMailTest(expired, now + 2 * DAY), false);
+});
+test("legacy schema upgrade pauses unsafe timers, preserves messages and is repeatable", () => {
+  awaiting();
+  addMessage();
+  for (const column of [
+    "check_sent_at",
+    "check_inflight",
+    "check_failed_at",
+    "reminder_stage",
+  ])
+    db().exec(`ALTER TABLE life DROP COLUMN ${column}`);
+  migrateApp();
+  assert.equal(life("owner").state, "disabled");
+  assert.equal(life("owner").deadline, null);
+  confirm("owner", now);
+  migrateApp();
+  assert.equal(life("owner").state, "active");
+  assert.equal(db().prepare("SELECT * FROM message").all().length, 1);
+});

@@ -25,7 +25,15 @@ type Data = {
     next_check: number | null;
     deadline: number | null;
     confirmed_at: number | null;
+    check_sent_at: number | null;
+    check_failed_at: number | null;
+    check_inflight: number | null;
   };
+  mailTest: {
+    requested_at: number;
+    accepted_at: number | null;
+    received_at: number | null;
+  } | null;
   worker: { last_tick: number | null };
   messages: Message[];
   events: { kind: string; created_at: number }[];
@@ -45,6 +53,12 @@ const date = (time: number | null) =>
       })
     : "—";
 const labels: Record<string, string> = {
+  upgrade_paused: "Prüfung beim Update zur Sicherheit pausiert",
+  reminder_sent: "Countdown-Erinnerung vom Mailserver angenommen",
+  reminder_failed: "Erinnerung fehlgeschlagen – Prüfung automatisch pausiert",
+  mail_test_sent: "Testmail vom Mailserver angenommen",
+  mail_test_failed: "Testmail fehlgeschlagen",
+  mail_test_received: "Empfang der Testmail bestätigt",
   confirmed: "Lebenszeichen bestätigt",
   disabled: "Prüfung deaktiviert",
   check_sent: "Prüf-E-Mail vom Mailserver angenommen",
@@ -228,10 +242,13 @@ function Editor({
 export default function Dashboard() {
   const [data, setData] = useState<Data | null>(null);
   const [notice, setNotice] = useState("");
+  const [fetchError, setFetchError] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Message | "new" | null>(null);
   const [account, setAccount] = useState(false);
+  const [clock, setClock] = useState(Date.now());
+  const [refreshed, setRefreshed] = useState<number | null>(null);
   const reload = useCallback(async () => {
     try {
       const response = await fetch("/api/dashboard", { cache: "no-store" });
@@ -242,8 +259,10 @@ export default function Dashboard() {
       if (!response.ok)
         throw new Error("Dashboard konnte nicht geladen werden.");
       setData(await response.json());
+      setRefreshed(Date.now());
+      setFetchError("");
     } catch (error) {
-      setNotice(
+      setFetchError(
         error instanceof Error ? error.message : "Dienst nicht erreichbar.",
       );
     } finally {
@@ -252,6 +271,19 @@ export default function Dashboard() {
   }, []);
   useEffect(() => {
     void reload();
+    const poll = window.setInterval(() => {
+      void reload();
+    }, 15_000);
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+    const focus = () => {
+      void reload();
+    };
+    window.addEventListener("focus", focus);
+    return () => {
+      clearInterval(poll);
+      clearInterval(timer);
+      window.removeEventListener("focus", focus);
+    };
   }, [reload]);
   async function run(input: Record<string, unknown>) {
     setBusy(true);
@@ -259,6 +291,18 @@ export default function Dashboard() {
     try {
       await action(input);
       await reload();
+      if (input.action === "disable")
+        setNotice(
+          "Gestoppt: Die Prüfung ist pausiert. Noch nicht begonnene Sendungen werden nicht versendet.",
+        );
+      if (input.action === "confirm")
+        setNotice(
+          "Lebenszeichen gespeichert. Der ausstehende Versand ist gestoppt; die nächste Prüfung folgt in einem Monat.",
+        );
+      if (input.action === "test_mail")
+        setNotice(
+          "Testmail vom Mailserver angenommen. Bitte bestätige den Empfang über den Link in der E-Mail.",
+        );
     } catch (error) {
       setNotice(
         error instanceof Error ? error.message : "Aktion fehlgeschlagen.",
@@ -276,7 +320,7 @@ export default function Dashboard() {
   if (!data)
     return (
       <section className="narrow">
-        <p role="alert">{notice}</p>
+        <p role="alert">{fetchError || notice}</p>
         <button onClick={reload}>Erneut laden</button>
       </section>
     );
@@ -318,6 +362,12 @@ export default function Dashboard() {
           {notice}
         </p>
       )}
+      {fetchError && (
+        <p className="notice" role="alert">
+          {fetchError} Der angezeigte Timerstatus kann veraltet sein. Eine
+          Stop-Aktion ist erst nach erfolgreicher Serverbestätigung wirksam.
+        </p>
+      )}
       {stale && (
         <p className="notice">
           Der Prüfjob ist noch nicht gestartet oder seit über einer Stunde nicht
@@ -326,6 +376,115 @@ export default function Dashboard() {
         </p>
       )}
       {account && <Account data={data} onSave={reload} onNotice={setNotice} />}
+      <section
+        className={`life-panel timer-panel ${state === "awaiting" || state === "released" ? "timer-alert" : ""}`}
+        aria-label="Lebenstimer"
+      >
+        <div>
+          <p className="eyebrow">LEBENSTIMER / MONATLICHER SELF CHECK</p>
+          <h2>
+            {state === "awaiting"
+              ? "Dein Countdown läuft."
+              : state === "released"
+                ? "Versand ist freigegeben."
+                : state === "disabled"
+                  ? "Dein Timer ist pausiert."
+                  : "Alles im grünen Bereich."}
+          </h2>
+          {state === "awaiting" && (
+            <>
+              <p className="countdown">
+                {(() => {
+                  const seconds = Math.max(
+                    0,
+                    Math.ceil(((data.life.deadline || clock) - clock) / 1000),
+                  );
+                  return `${Math.floor(seconds / 86400)} Tage · ${String(Math.floor(seconds / 3600) % 24).padStart(2, "0")}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+                })()}
+              </p>
+              <p>
+                Gestartet: {date(data.life.check_sent_at)}
+                <br />
+                Antwortfrist: {date(data.life.deadline)}
+              </p>
+              <p>
+                Ohne Lebenszeichen werden danach deine freigegebenen Nachrichten
+                versendet. Du kannst hier direkt stoppen – auch ohne die E-Mail.
+              </p>
+            </>
+          )}
+          {state === "released" && (
+            <p>
+              Stoppe jetzt die noch nicht begonnenen Sendungen. Bereits
+              begonnene oder versendete E-Mails können nicht zurückgerufen
+              werden.
+            </p>
+          )}
+          {state === "active" && (
+            <p>
+              {data.life.check_inflight
+                ? "Prüfmail wird gesendet. Der Countdown hat noch nicht begonnen."
+                : `Nächste Prüfmail: ${date(data.life.next_check)}`}
+              <br />
+              Sieben Tage Antwortzeit ab Annahme der Prüfmail durch den
+              Mailserver.
+            </p>
+          )}
+          {state === "disabled" && (
+            <p>
+              Kein Countdown. Keine neue automatische Versandfreigabe. Bereits
+              begonnene Sendungen können nicht zurückgerufen werden.
+            </p>
+          )}
+          {data.life.check_failed_at && (
+            <p className="notice" role="alert">
+              Mailproblem am {date(data.life.check_failed_at)}. Kein laufender
+              Countdown. Bitte prüfe den Mailversand mit einer Testmail.
+            </p>
+          )}
+          <small>
+            Zuletzt bestätigt: {date(data.life.confirmed_at)} · Status
+            aktualisiert: {date(refreshed)}
+          </small>
+        </div>
+        <div className="timer-actions">
+          <button
+            disabled={busy}
+            onClick={() => {
+              if (
+                state !== "disabled" ||
+                window.confirm(
+                  "Monatliche Prüfung aktivieren? Nach einer unbeantworteten Prüfmail werden deine freigegebenen Nachrichten nach sieben Tagen versendet. Bitte teste vorher den Mailempfang.",
+                )
+              )
+                void run({ action: "confirm" });
+            }}
+          >
+            {state === "disabled"
+              ? "Monatliche Prüfung aktivieren"
+              : state === "awaiting" || state === "released"
+                ? "Ich bin da – Versand stoppen"
+                : "Ich bin noch da"}
+          </button>
+          {state !== "disabled" && (
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() => run({ action: "disable" })}
+            >
+              {state === "awaiting" || state === "released"
+                ? "Sofort stoppen & Prüfung pausieren"
+                : "Prüfung pausieren"}
+            </button>
+          )}
+          {(state === "awaiting" || state === "released") && (
+            <small>
+              „Ich bin da“ startet den nächsten Monatszyklus. „Pausieren“
+              schaltet die Prüfung aus.
+            </small>
+          )}
+        </div>
+      </section>
       <div className="dashboard-grid">
         <div>
           {editing ? (
@@ -446,60 +605,33 @@ export default function Dashboard() {
           )}
         </div>
         <aside>
-          <section className="life-panel">
-            <p className="eyebrow">DEIN SELF CHECK</p>
-            <h2>
-              {state === "disabled"
-                ? "Noch nicht aktiviert."
-                : state === "awaiting"
-                  ? "Dein Lebenszeichen fehlt."
-                  : state === "released"
-                    ? "Versand wurde freigegeben."
-                    : "Schön, dass du da bist."}
-            </h2>
-            <p>Monatliche Prüfung · sieben Tage Antwortzeit</p>
-            {state === "awaiting" ? (
-              <p className="notice">
-                Bitte bestätige bis {date(data.life.deadline)}. Danach werden
-                freigegebene Nachrichten versendet.
-              </p>
-            ) : state === "released" ? (
-              <p className="notice">
-                Bestätige jetzt, um noch nicht begonnene Versandaufträge zu
-                stoppen. Bereits begonnene Sendungen können nicht zurückgerufen
-                werden.
-              </p>
-            ) : (
-              <p className="muted">
-                {state === "active"
-                  ? `Nächste Prüf-E-Mail: ${date(data.life.next_check)}`
-                  : "Aktiviere die Prüfung erst, wenn deine Nachrichten bereit sind."}
-              </p>
-            )}
+          <section className="panel mail-status">
+            <p className="eyebrow">MAILVERBINDUNG</p>
+            <h3>Kommt deine Mail an?</h3>
+            <p className="muted">Testziel: {data.user.email}</p>
+            <p>
+              {data.mailTest?.received_at
+                ? `Empfang bestätigt: ${date(data.mailTest.received_at)}`
+                : data.mailTest?.accepted_at
+                  ? "Mailserver hat die Testmail angenommen. Empfang noch unbestätigt."
+                  : data.mailTest
+                    ? "Testmail fehlgeschlagen oder noch im Versand."
+                    : "Noch kein Mailtest durchgeführt."}
+            </p>
             <button
-              disabled={busy}
-              onClick={() => {
-                if (
-                  state !== "disabled" ||
-                  window.confirm(
-                    "Monatlichen Self Check aktivieren? Wenn du auf eine Prüf-E-Mail sieben Tage nicht reagierst, werden deine freigegebenen Nachrichten versendet.",
-                  )
-                )
-                  void run({ action: "confirm" });
-              }}
+              className="secondary"
+              disabled={
+                busy ||
+                (!!data.mailTest && clock - data.mailTest.requested_at < 60_000)
+              }
+              onClick={() => run({ action: "test_mail" })}
             >
-              {state === "disabled" ? "Prüfung aktivieren" : "Ich bin noch da"}
+              Testmail senden
             </button>
-            {state !== "disabled" && (
-              <button
-                className="text-button"
-                disabled={busy}
-                onClick={() => run({ action: "disable" })}
-              >
-                Prüfung deaktivieren
-              </button>
-            )}
-            <small>Zuletzt bestätigt: {date(data.life.confirmed_at)}</small>
+            <small>
+              Bestätige den Link in der Testmail. Auch den Spamordner prüfen.
+              Ein erfolgreicher Test garantiert keine spätere Zustellung.
+            </small>
           </section>
           <section className="activity">
             <h3>Letzte Ereignisse</h3>

@@ -16,7 +16,8 @@ export function db() {
 }
 
 export function migrateApp() {
-  db().exec(`
+  db().transaction(() => {
+    db().exec(`
     CREATE TABLE IF NOT EXISTS life (
       user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
       state TEXT NOT NULL DEFAULT 'disabled' CHECK(state IN ('disabled','active','awaiting','released')),
@@ -39,5 +40,30 @@ export function migrateApp() {
       id INTEGER PRIMARY KEY CHECK(id = 1), last_tick INTEGER, lease_until INTEGER NOT NULL DEFAULT 0
     );
     INSERT OR IGNORE INTO worker(id) VALUES (1);
+    CREATE TABLE IF NOT EXISTS mail_probe (
+      user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+      token_hash TEXT UNIQUE, requested_at INTEGER NOT NULL,
+      accepted_at INTEGER, received_at INTEGER
+    );
   `);
+    const columns = new Set(
+      (db().prepare("PRAGMA table_info(life)").all() as { name: string }[]).map(
+        (row) => row.name,
+      ),
+    );
+    if (!columns.has("check_sent_at")) {
+      db().exec(
+        "INSERT INTO event(user_id, kind, created_at) SELECT user_id, 'upgrade_paused', CAST(strftime('%s','now') AS INTEGER) * 1000 FROM life WHERE state IN ('awaiting','released'); UPDATE life SET state = 'disabled', next_check = NULL, deadline = NULL, token_hash = NULL, released_at = NULL WHERE state IN ('awaiting','released')",
+      );
+    }
+    for (const column of [
+      "check_sent_at",
+      "check_inflight",
+      "check_failed_at",
+      "reminder_stage",
+    ]) {
+      if (!columns.has(column))
+        db().exec(`ALTER TABLE life ADD COLUMN ${column} INTEGER`);
+    }
+  })();
 }

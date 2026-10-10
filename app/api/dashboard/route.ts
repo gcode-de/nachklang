@@ -12,6 +12,7 @@ import {
   type Payload,
 } from "../../../lib/life";
 import { validateMessage } from "../../../lib/validation";
+import { testMail } from "../../../lib/mail-test";
 import { readJson } from "../../../lib/request";
 
 export const dynamic = "force-dynamic";
@@ -36,7 +37,16 @@ export async function GET(request: Request) {
   return Response.json(
     {
       user: { id: owner.id, name: owner.name, email: owner.email },
-      life: life(owner.id),
+      life: (() => {
+        const { token_hash, ...status } = life(owner.id);
+        return status;
+      })(),
+      mailTest:
+        db()
+          .prepare(
+            "SELECT requested_at, accepted_at, received_at FROM mail_probe WHERE user_id = ?",
+          )
+          .get(owner.id) || null,
       worker,
       messages: rows.map(({ payload, user_id, ...row }) => ({
         ...row,
@@ -73,7 +83,8 @@ export async function POST(request: Request) {
   const input = raw as Record<string, unknown>;
   let savedId: string | undefined;
   try {
-    if (input.action === "confirm") confirm(owner.id);
+    if (input.action === "test_mail") await testMail(owner.id, owner.email);
+    else if (input.action === "confirm") confirm(owner.id);
     else if (input.action === "disable") disable(owner.id);
     else if (
       input.action === "save" ||

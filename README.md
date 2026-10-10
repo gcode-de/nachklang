@@ -48,7 +48,7 @@ Add these repository **Actions secrets**:
 - `DOCKERHUB_USER`: your Docker Hub username
 - `DOCKERHUB_TOKEN`: a Docker Hub access token with permission to push to `nachklang`
 
-Without the secrets, tests run and publishing is skipped with an explanation in the workflow summary. Once added, run **Test and publish → Run workflow**. Published tags include `latest`, `sha-<commit>` and a version for `v*` Git tags. Create `v0.1.0` after configuration to publish `0.1.0`; use a version or digest in the homelab, rather than silently updating `latest`.
+Without the secrets, tests run and publishing is skipped with an explanation in the workflow summary. Once added, run **Test and publish → Run workflow**. Published tags include `latest`, `sha-<commit>` and a version for `v*` Git tags. Create `v0.2.0` after configuration to publish `0.2.0`; use a version or digest in the homelab, rather than silently updating `latest`.
 
 SMTP credentials, database and encryption keys belong only on the runtime host, never in Git or the image. CI builds/publishes the image; it does not access your homelab or automatically replace its running version.
 
@@ -120,3 +120,13 @@ Before inviting public users, supply the operator's contact details and an appro
 Follows [Ponytail](https://github.com/DietrichGebert/ponytail/blob/main/skills/ponytail/SKILL.md): the smallest complete implementation, built-in capabilities first, meaningful checks retained. SQLite is used directly instead of adding a second ORM alongside Better Auth's database adapter.
 
 MIT licensed. No content, branding or code from GoodbyeMemo is included.
+
+## Countdown visibility and mail diagnostics (0.2.0)
+
+The dashboard shows the timer prominently above messages: paused, active, awaiting a reply (start, deadline and live remaining time), or released. It refreshes server state every 15 seconds and on window focus. **Ich bin da – Versand stoppen** cancels unclaimed dispatch and starts the next monthly cycle; **Sofort stoppen & Prüfung pausieren** disables checks. Already begun SMTP sends cannot be recalled.
+
+A check has no deadline while SMTP is in progress. The countdown is committed only after acceptance, conditional on the user not having stopped it meanwhile. Interrupted check sends restart safely with a fresh check. Reminder emails follow at days 3 and 6; known reminder failures pause the timer instead of releasing recipient messages. SMTP failures are visible on the dashboard and in its events.
+
+**Testmail senden** sends only to the signed-in account, at most once per minute. An explicit confirmation link (24-hour validity, single use, POST only) records receipt independently of the life check. SMTP acceptance alone is labelled as such. This is an inbox test, not a guarantee of future delivery: configure SPF/DKIM/DMARC, check spam, and monitor provider bounces. Automated bounce processing is not included.
+
+Upgrading from 0.1.0 adds columns and a mail-test table without deleting messages. Existing awaiting/released timers are paused once during migration, because the previous schema cannot prove a safely committed check send. Review your dashboard, test your mail route, then reactivate monthly checks. Back up the database and encryption key before updating. The default UI is dark with a persistent light-mode switch; fonts are local system sans-serif fonts.
