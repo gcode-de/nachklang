@@ -54,7 +54,18 @@ export function migrateApp() {
       token_hash TEXT UNIQUE, requested_at INTEGER NOT NULL,
       accepted_at INTEGER, received_at INTEGER
     );
+    CREATE TABLE IF NOT EXISTS activation_review (
+      user_id TEXT PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL, context TEXT NOT NULL,
+      reviewed_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+    );
   `);
+    const messageColumns = new Set((db().prepare("PRAGMA table_info(message)").all() as { name: string }[]).map(row => row.name));
+    for (const [name, type] of [["revision", "INTEGER NOT NULL DEFAULT 0"], ["release_token", "TEXT"], ["release_context", "TEXT"], ["release_expires", "INTEGER"], ["failure_kind", "TEXT"], ["failure_reason", "TEXT"], ["dispatch_owner", "TEXT"]]) {
+      if (!messageColumns.has(name)) db().exec(`ALTER TABLE message ADD COLUMN ${name} ${type}`);
+    }
+    if (!(db().prepare("PRAGMA table_info(worker)").all() as {name:string}[]).some(c => c.name === "lease_owner")) db().exec("ALTER TABLE worker ADD COLUMN lease_owner TEXT");
+    db().prepare("UPDATE message SET failure_kind='unknown' WHERE status='failed' AND failure_kind IS NULL").run();
     const columns = new Set(
       (db().prepare("PRAGMA table_info(life)").all() as { name: string }[]).map(
         (row) => row.name,

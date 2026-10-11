@@ -10,6 +10,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="de" data-theme="dark">
       <body>
+        <a className="skip-link" href="#main-content">Zum Inhalt springen</a>
         <header className="site-header">
           <a className="brand" href="/">
             nachklang<span>WORTE, DIE BLEIBEN</span>
@@ -21,10 +22,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </a>
           </nav>
         </header>
-        <main>{children}</main>
+        <main id="main-content" tabIndex={-1}>{children}</main>
         <footer>
           <span>Nachklang · Ein persönlicher Ort für deine Worte.</span>
-          <a href="/about">So funktioniert es & Datenschutz</a>
+          <a href="/about">Funktionsweise & Datenverarbeitung</a>
         </footer>
       </body>
     </html>

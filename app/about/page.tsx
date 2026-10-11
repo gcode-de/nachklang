@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 export default function About() {
   return (
     <section className="narrow prose">
@@ -6,7 +7,7 @@ export default function About() {
       <h2>Du bestimmst, was weitergeht.</h2>
       <p>
         Nachrichten werden automatisch als Entwurf gespeichert. Erst wenn du
-        eine Nachricht ausdrücklich freigibst und den Self Check aktivierst,
+        eine Nachricht ausdrücklich freigibst und die monatliche Lebensbestätigung aktivierst,
         kann sie versendet werden. Ein optionales Datum verschiebt den Versand
         bis mindestens zu diesem Tag (UTC).
       </p>
@@ -75,11 +76,9 @@ export default function About() {
         lassen sich das Konto und seine Daten entfernen. Bestehende Sicherungen
         werden dadurch nicht nachträglich verändert.
       </p>
-      <p className="notice">
-        Dies ist die technische Beschreibung dieser selbst gehosteten App. Vor
-        einer öffentlichen Nutzung muss der Betreiber seine Kontaktdaten und die
-        konkrete Datenschutzerklärung ergänzen.
-      </p>
+      <h2>Informationen zu dieser Instanz.</h2>
+      <p>Betreiberkontakt: {process.env.OPERATOR_CONTACT || "nicht hinterlegt — vom Betreiber bereitzustellen"}</p>
+      {process.env.INSTANCE_PRIVACY_NOTICE ? <p className="instance-notice">{process.env.INSTANCE_PRIVACY_NOTICE}</p> : <p className="notice">Eine instanzspezifische Datenschutzerklärung ist nicht hinterlegt. Diese technische Beschreibung ersetzt sie nicht. Betreiberangaben, konkrete Anbieter und Aufbewahrungsfristen müssen vor einer Ausweitung des Zugangs ergänzt werden.</p>}
     </section>
   );
 }

@@ -1,4 +1,5 @@
 import Link from "next/link";
+export const dynamic = "force-dynamic";
 export default function Home() {
   return (
     <>
@@ -16,7 +17,7 @@ export default function Home() {
         </p>
         <div className="actions">
           <Link className="button" href="/login">
-            Deinen Nachklang schreiben ↗
+            Anmelden ↗
           </Link>
           <Link className="quiet" href="/about">
             Wie funktioniert das?
@@ -25,11 +26,12 @@ export default function Home() {
         <div className="hero-note">
           <span className="symbol">✳</span>
           <p>
-            Deine Nachrichten bleiben bei dir.
+            Auf dieser selbst gehosteten Instanz gespeichert.
             <br />
-            <strong>Bis dein monatlicher Self Check ausbleibt.</strong>
+            <strong>Nur ausdrücklich freigegebene Nachrichten können weitergegeben werden.</strong>
           </p>
         </div>
+        <p className="muted">{process.env.ALLOW_REGISTRATION === "false" ? "Private Instanz: Anmeldung nur mit bestehendem Konto. Öffentliche Registrierung ist geschlossen." : "Anmelden oder auf der Anmeldeseite ein Konto erstellen."}</p>
       </section>
       <section className="steps">
         <article>

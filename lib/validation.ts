@@ -18,7 +18,7 @@ export function validateMessage(
   )
     throw new Error("Nachricht ist zu lang.");
   if (
-    recipientEmail &&
+    value.ready && recipientEmail &&
     (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipientEmail) ||
       /[\r\n]/.test(recipientEmail))
   )

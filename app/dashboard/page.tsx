@@ -7,9 +7,13 @@ import {
   type FormEvent,
 } from "react";
 import { authClient } from "../../lib/auth-client";
+import Editor from "./editor";
+import { action } from "../../lib/browser-action";
+import { executionStatus, deliverySummary } from "../../lib/message-status";
 
 type Message = {
   id: string;
+  revision: number;
   recipientName: string;
   recipientEmail: string;
   body: string;
@@ -38,21 +42,18 @@ type Data = {
   messages: Message[];
   events: { kind: string; created_at: number }[];
 };
-type Draft = {
-  recipientName: string;
-  recipientEmail: string;
-  body: string;
-  deliveryDate: string;
-  ready: boolean;
-};
 const date = (time: number | null) =>
   time
     ? new Date(time).toLocaleString("de-DE", {
         dateStyle: "medium",
         timeStyle: "short",
-      })
+        timeZone: "UTC",
+      }) + " UTC"
     : "—";
 const labels: Record<string, string> = {
+  message_armed: "Nachrichtenfreigabe ausdrücklich bestätigt",
+  message_revoked: "Nachrichtenfreigabe widerrufen",
+  receipt_warning_accepted: "Aktiviert trotz unbestätigtem Postfachempfang",
   upgrade_paused: "Prüfung beim Update zur Sicherheit pausiert",
   reminder_sent: "Countdown-Erinnerung vom Mailserver angenommen",
   reminder_failed: "Erinnerung fehlgeschlagen – Prüfung automatisch pausiert",
@@ -71,174 +72,6 @@ const labels: Record<string, string> = {
   message_deleted: "Nachricht gelöscht",
 };
 
-async function action(input: Record<string, unknown>) {
-  const response = await fetch("/api/dashboard", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(input),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Aktion fehlgeschlagen.");
-  return data as { ok: boolean; id?: string };
-}
-
-function Editor({
-  message,
-  onClose,
-  onSave,
-}: {
-  message?: Message;
-  onClose: () => void;
-  onSave: () => void;
-}) {
-  const [draft, setDraft] = useState<Draft>({
-    recipientName: message?.recipientName || "",
-    recipientEmail: message?.recipientEmail || "",
-    body: message?.body || "",
-    deliveryDate: message?.delivery_date || "",
-    ready: !!message?.ready,
-  });
-  const [dirty, setDirty] = useState(false);
-  const [status, setStatus] = useState("Noch keine Änderung.");
-  const savedId = useRef(message?.id);
-  const queue = useRef(Promise.resolve());
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const alive = useRef(true);
-  const currentDraft = useRef(draft);
-  currentDraft.current = draft;
-  const persist = useCallback(
-    (snapshot: Draft) => {
-      const next = queue.current
-        .catch(() => {})
-        .then(async () => {
-          if (alive.current) setStatus("Wird gespeichert …");
-          const result = await action({
-            action: "save",
-            id: savedId.current,
-            ...snapshot,
-          });
-          savedId.current = result.id;
-          if (alive.current) {
-            if (currentDraft.current === snapshot) setStatus("Gespeichert");
-            onSave();
-          }
-        });
-      queue.current = next;
-      return next;
-    },
-    [onSave],
-  );
-  useEffect(() => {
-    if (!dirty) return;
-    timer.current = setTimeout(() => {
-      persist(draft).catch((error) => {
-        if (alive.current) setStatus(error.message);
-      });
-    }, 800);
-    return () => clearTimeout(timer.current);
-  }, [draft, dirty, persist]);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-  useEffect(() => {
-    if (!dirty || status === "Gespeichert") return;
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty, status]);
-  function change<K extends keyof Draft>(key: K, value: Draft[K]) {
-    setDirty(true);
-    setStatus("Ungespeicherte Änderung …");
-    setDraft((current) => ({ ...current, [key]: value }));
-  }
-  async function finish(e: FormEvent) {
-    e.preventDefault();
-    clearTimeout(timer.current);
-    try {
-      if (dirty) await persist(draft);
-      onClose();
-    } catch (error) {
-      setStatus(
-        error instanceof Error ? error.message : "Speichern fehlgeschlagen.",
-      );
-    }
-  }
-  return (
-    <section className="panel editor">
-      <div className="section-heading">
-        <h2>{message ? "Deine Nachricht" : "Ein neuer Nachklang"}</h2>
-        <span role="status" className="muted">
-          {status}
-        </span>
-      </div>
-      <form className="stack" onSubmit={finish}>
-        <div className="field-grid">
-          <label>
-            Für wen?
-            <input
-              value={draft.recipientName}
-              maxLength={200}
-              onChange={(e) => change("recipientName", e.target.value)}
-              placeholder="Name"
-            />
-          </label>
-          <label>
-            E-Mail-Adresse
-            <input
-              value={draft.recipientEmail}
-              type="email"
-              maxLength={254}
-              onChange={(e) => change("recipientEmail", e.target.value)}
-              placeholder="name@beispiel.de"
-            />
-          </label>
-        </div>
-        <label>
-          Deine Worte
-          <textarea
-            rows={12}
-            value={draft.body}
-            maxLength={100_000}
-            onChange={(e) => change("body", e.target.value)}
-            placeholder="Was möchtest du diesem Menschen mitgeben?"
-          />
-        </label>
-        <label>
-          Optional: frühestens versenden ab
-          <input
-            type="date"
-            value={draft.deliveryDate}
-            onChange={(e) => change("deliveryDate", e.target.value)}
-          />
-          <small>
-            Erst nach ausgebliebenem Self Check. Das Datum wird in UTC
-            ausgewertet.
-          </small>
-        </label>
-        <label className="checkbox">
-          <input
-            type="checkbox"
-            checked={draft.ready}
-            onChange={(e) => change("ready", e.target.checked)}
-          />
-          <span>Diese Nachricht für den automatischen Versand freigeben.</span>
-        </label>
-        <p className="muted">
-          Ohne Freigabe bleibt sie ein Entwurf. Änderungen werden nach einer
-          kurzen Pause automatisch gespeichert.
-        </p>
-        <button type="submit">Speichern & zurück</button>
-      </form>
-    </section>
-  );
-}
-
 export default function Dashboard() {
   const [data, setData] = useState<Data | null>(null);
   const [notice, setNotice] = useState("");
@@ -247,9 +80,15 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Message | "new" | null>(null);
   const [account, setAccount] = useState(false);
+  const [urgent, setUrgent] = useState(false);
+  const [activation, setActivation] = useState<{token: string; email: string; received: boolean; releasedCount: number; draftCount: number; nextCheck: number} | null>(null);
+  const [bypassReceipt, setBypassReceipt] = useState(false);
+  const editorOrigin = useRef<string>("new-message");
+  const fetchSequence = useRef(0);
   const [clock, setClock] = useState(Date.now());
   const [refreshed, setRefreshed] = useState<number | null>(null);
   const reload = useCallback(async () => {
+    const sequence = ++fetchSequence.current;
     try {
       const response = await fetch("/api/dashboard", { cache: "no-store" });
       if (response.status === 401) {
@@ -258,7 +97,9 @@ export default function Dashboard() {
       }
       if (!response.ok)
         throw new Error("Dashboard konnte nicht geladen werden.");
-      setData(await response.json());
+      const snapshot = await response.json();
+      if (sequence !== fetchSequence.current) return;
+      setData(snapshot);
       setRefreshed(Date.now());
       setFetchError("");
     } catch (error) {
@@ -288,8 +129,10 @@ export default function Dashboard() {
   async function run(input: Record<string, unknown>) {
     setBusy(true);
     setNotice("");
+    setUrgent(false);
     try {
       await action(input);
+      if (input.action === "activate") {setActivation(null); setNotice("Monatliche Prüfung ausdrücklich aktiviert.");}
       await reload();
       if (input.action === "disable")
         setNotice(
@@ -304,6 +147,7 @@ export default function Dashboard() {
           "Testmail vom Mailserver angenommen. Bitte bestätige den Empfang über den Link in der E-Mail.",
         );
     } catch (error) {
+      setUrgent(true);
       setNotice(
         error instanceof Error ? error.message : "Aktion fehlgeschlagen.",
       );
@@ -358,7 +202,7 @@ export default function Dashboard() {
         </div>
       </div>
       {notice && (
-        <p role="alert" className="notice">
+        <p role={urgent ? "alert" : "status"} className="notice">
           {notice}
         </p>
       )}
@@ -381,7 +225,7 @@ export default function Dashboard() {
         aria-label="Lebenstimer"
       >
         <div>
-          <p className="eyebrow">LEBENSTIMER / MONATLICHER SELF CHECK</p>
+          <p className="eyebrow">MONATLICHE LEBENSBESTÄTIGUNG</p>
           <h2>
             {state === "awaiting"
               ? "Dein Countdown läuft."
@@ -389,7 +233,7 @@ export default function Dashboard() {
                 ? "Versand ist freigegeben."
                 : state === "disabled"
                   ? "Dein Timer ist pausiert."
-                  : "Alles im grünen Bereich."}
+                  : "Die monatliche Prüfung ist aktiv."}
           </h2>
           {state === "awaiting" && (
             <>
@@ -450,14 +294,12 @@ export default function Dashboard() {
         <div className="timer-actions">
           <button
             disabled={busy}
-            onClick={() => {
-              if (
-                state !== "disabled" ||
-                window.confirm(
-                  "Monatliche Prüfung aktivieren? Nach einer unbeantworteten Prüfmail werden deine freigegebenen Nachrichten nach sieben Tagen versendet. Bitte teste vorher den Mailempfang.",
-                )
-              )
-                void run({ action: "confirm" });
+            onClick={async () => {
+              if (state !== "disabled") {void run({action: "confirm"}); return;}
+              setBusy(true); setNotice(""); setBypassReceipt(false);
+              try {setActivation(await action({action: "review_activation"}));}
+              catch (e) {setUrgent(true); setNotice(e instanceof Error ? e.message : "Bereitschaft nicht bestätigt.");}
+              finally {setBusy(false);}
             }}
           >
             {state === "disabled"
@@ -485,6 +327,14 @@ export default function Dashboard() {
           )}
         </div>
       </section>
+      {activation && state === "disabled" && <section className="panel readiness" aria-label="Bereitschaft prüfen">
+        <h2>Bereit für die monatliche Prüfung?</h2>
+        <ul><li>Bestätigtes Konto: {activation.email}</li><li>Empfang im eigenen Postfach: {activation.received ? "ausdrücklich bestätigt" : "nicht bestätigt — SMTP-Annahme ist kein Empfang"}</li><li>{activation.releasedCount} freigegebene Nachrichten · {activation.draftCount} Entwürfe</li><li>Prüfjob aktuell · nächste Prüfmail: {date(activation.nextCheck)}</li></ul>
+        <p>Sieben Tage Antwortfrist ab Mailserver-Annahme der Prüfmail. Eine ausbleibende Antwort beweist keinen Todesfall. Ohne Antwort können freigegebene Nachrichten versendet werden. Pausieren und „Ich bin da – Versand stoppen“ stoppen nur noch nicht begonnene Übergaben.</p>
+        {!activation.received && <label className="checkbox"><input type="checkbox" checked={bypassReceipt} onChange={e => setBypassReceipt(e.target.checked)}/><span>Ich erkenne ausdrücklich das Risiko an, dass ich die Prüfmail nicht erhalte. Trotzdem ohne bestätigten Empfang aktivieren.</span></label>}
+        <div className="actions"><button disabled={busy || (!activation.received && !bypassReceipt)} onClick={() => run({action: "activate", token: activation.token, confirmed: true, bypassReceipt})}>Jetzt monatliche Prüfung aktivieren</button><button className="secondary" disabled={busy} onClick={() => setActivation(null)}>Abbrechen · bleibt pausiert</button></div>
+        <small>Für sicheren Empfang zuerst unten eine Testmail an dein eigenes Postfach senden und den Link dort bestätigen. Danach die Bereitschaft erneut prüfen.</small>
+      </section>}
       <div className="dashboard-grid">
         <div>
           {editing ? (
@@ -494,6 +344,7 @@ export default function Dashboard() {
               onSave={reload}
               onClose={() => {
                 setEditing(null);
+                requestAnimationFrame(() => document.getElementById(editorOrigin.current)?.focus());
                 void reload();
               }}
             />
@@ -505,8 +356,9 @@ export default function Dashboard() {
                   <span className="count">{data.messages.length}</span>
                 </h2>
                 <button
+                  id="new-message"
                   disabled={busy || state === "released"}
-                  onClick={() => setEditing("new")}
+                  onClick={() => {editorOrigin.current="new-message"; setEditing("new");}}
                 >
                   + Neue Nachricht
                 </button>
@@ -528,15 +380,7 @@ export default function Dashboard() {
                     <span
                       className={`badge ${message.status === "sent" ? "green" : ""}`}
                     >
-                      {message.status === "sent"
-                        ? "Versendet"
-                        : message.status === "failed"
-                          ? "Versand unklar / fehlgeschlagen"
-                          : message.status === "sending"
-                            ? "Versand läuft"
-                            : message.ready
-                              ? "Freigegeben"
-                              : "Entwurf"}
+                      {message.ready ? "Für Versand freigegeben" : "Entwurf"}
                     </span>
                   </div>
                   <p className="muted">
@@ -546,20 +390,20 @@ export default function Dashboard() {
                     {message.body || "Hier ist noch Raum für deine Worte."}
                   </p>
                   <p className="muted">
-                    {message.sent_at
-                      ? `Vom Mailserver angenommen: ${date(message.sent_at)}`
-                      : message.delivery_date
-                        ? `Frühestens ab ${message.delivery_date}, nach Versandfreigabe`
-                        : "Nach ausgebliebener Lebensbestätigung"}
+                    {executionStatus(message, state, clock)}
+                    {message.sent_at && <> · {date(message.sent_at)}</>}
+                    {message.delivery_date && <small>{deliverySummary(message.delivery_date)}</small>}
                   </p>
                   <div className="actions">
+                    {!!message.ready && message.status === "pending" && <button className="secondary" disabled={busy} onClick={() => run({action: "revoke", id: message.id})}>Freigabe widerrufen</button>}
                     {message.status === "pending" && (
                       <button
                         className="secondary"
                         disabled={busy || state === "released"}
-                        onClick={() => setEditing(message)}
+                        id={`edit-${message.id}`}
+                        onClick={() => {editorOrigin.current=`edit-${message.id}`; setEditing(message);}}
                       >
-                        Bearbeiten
+                        {message.ready ? "Freigabe ansehen" : "Bearbeiten & Freigabe prüfen"}
                       </button>
                     )}
                     {message.status === "failed" && (
@@ -615,7 +459,7 @@ export default function Dashboard() {
                 : data.mailTest?.accepted_at
                   ? "Mailserver hat die Testmail angenommen. Empfang noch unbestätigt."
                   : data.mailTest
-                    ? "Testmail fehlgeschlagen oder noch im Versand."
+                    ? "Keine Mailserver-Annahme bestätigt: Versand läuft noch, ist unterbrochen oder fehlgeschlagen. Ereignisse prüfen; keine Empfangsbestätigung."
                     : "Noch kein Mailtest durchgeführt."}
             </p>
             <button
@@ -633,8 +477,8 @@ export default function Dashboard() {
               Ein erfolgreicher Test garantiert keine spätere Zustellung.
             </small>
           </section>
-          <section className="activity">
-            <h3>Letzte Ereignisse</h3>
+          <details className="activity">
+            <summary>Letzte Ereignisse ({data.events.length})</summary>
             {data.events.length ? (
               data.events.map((event, index) => (
                 <p key={index}>
@@ -645,7 +489,7 @@ export default function Dashboard() {
             ) : (
               <p className="muted">Deine Geschichte beginnt hier.</p>
             )}
-          </section>
+          </details>
         </aside>
       </div>
     </section>

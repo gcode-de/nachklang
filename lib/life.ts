@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { db } from "./database";
 import { decrypt, tokenHash } from "./crypto";
 import { appUrl } from "./config";
-import { sendMail, type Mail } from "./mail";
+import { sendMail, mailFailure, type Mail } from "./mail";
 
 export const DAY = 86_400_000;
 export const REPLY_WINDOW = 7 * DAY;
@@ -36,6 +36,13 @@ export type MessageRow = {
   created_at: number;
   updated_at: number;
   sent_at: number | null;
+  revision: number;
+  release_token: string | null;
+  release_context: string | null;
+  release_expires: number | null;
+  failure_kind: "rejected" | "unknown" | null;
+  failure_reason: string | null;
+  dispatch_owner: string | null;
 };
 
 export function nextMonth(now: number) {
@@ -67,7 +74,7 @@ export function confirm(userId: string, now = Date.now()) {
     life(userId);
     db()
       .prepare(
-        "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, confirmed_at = ?, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
+        "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, confirmed_at = ?, released_at = NULL, check_inflight = NULL, reminder_stage = NULL WHERE user_id = ?",
       )
       .run(nextMonth(now), now, userId);
     event(userId, "confirmed", now);
@@ -78,7 +85,7 @@ export function disable(userId: string) {
     life(userId);
     db()
       .prepare(
-        "UPDATE life SET state = 'disabled', next_check = NULL, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
+        "UPDATE life SET state = 'disabled', next_check = NULL, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, reminder_stage = NULL WHERE user_id = ?",
       )
       .run(userId);
     event(userId, "disabled");
@@ -102,6 +109,7 @@ export async function tick(
   now = Date.now(),
   deliver: (mail: Mail) => Promise<void> = sendMail,
 ) {
+  const owner = randomBytes(16).toString("hex");
   const acquired = db().transaction(() => {
     const worker = db().prepare("SELECT * FROM worker WHERE id = 1").get() as {
       last_tick: number | null;
@@ -110,7 +118,7 @@ export async function tick(
     if (worker.lease_until > now) return false;
     // SMTP may have accepted a message before a crashed process could record success.
     db()
-      .prepare("UPDATE message SET status = 'failed' WHERE status = 'sending'")
+      .prepare("UPDATE message SET status = 'failed', failure_kind = 'unknown', failure_reason = 'Unterbrochene SMTP-Übergabe; Annahme unklar.', dispatch_owner = NULL WHERE status = 'sending'")
       .run();
     // An interrupted check send must never leave a countdown running.
     db()
@@ -127,37 +135,38 @@ export async function tick(
       for (const row of rows) {
         db()
           .prepare(
-            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, check_failed_at = NULL, reminder_stage = NULL WHERE user_id = ?",
+            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, released_at = NULL, check_inflight = NULL, reminder_stage = NULL WHERE user_id = ?",
           )
           .run(now, row.user_id);
         event(row.user_id, "outage_reset", now);
       }
     }
     db()
-      .prepare("UPDATE worker SET last_tick = ?, lease_until = ? WHERE id = 1")
-      .run(now, now + LEASE_WINDOW);
+      .prepare("UPDATE worker SET last_tick = ?, lease_until = ?, lease_owner = ? WHERE id = 1")
+      .run(now, now + LEASE_WINDOW, owner);
     return true;
   })();
   if (!acquired) return;
-  const renew = () =>
-    db()
-      .prepare("UPDATE worker SET lease_until = ? WHERE id = 1")
-      .run(Date.now() + LEASE_WINDOW);
+  const owns = () => !!db().prepare("SELECT 1 FROM worker WHERE id=1 AND lease_owner=?").get(owner);
+  const renew = () => db().prepare("UPDATE worker SET lease_until = ? WHERE id = 1 AND lease_owner = ?").run(Math.max(now, Date.now()) + LEASE_WINDOW, owner).changes > 0;
   try {
+    // Only an explicit receipt for a probe requested after the failure proves recovery.
+    db().prepare("UPDATE life SET check_failed_at = NULL WHERE check_failed_at IS NOT NULL AND EXISTS (SELECT 1 FROM mail_probe WHERE mail_probe.user_id = life.user_id AND requested_at > life.check_failed_at AND received_at > life.check_failed_at)").run();
+    db().prepare("UPDATE life SET state='disabled', next_check=NULL, deadline=NULL, token_hash=NULL, released_at=NULL WHERE check_failed_at IS NOT NULL").run();
     const checks = db()
       .prepare(
         "SELECT life.*, user.email FROM life JOIN user ON user.id = life.user_id WHERE state = 'active' AND next_check <= ? AND user.emailVerified = 1",
       )
       .all(now) as (Life & { email: string })[];
     for (const check of checks) {
-      renew();
+      if (!renew()) return;
       const token = randomBytes(32).toString("hex");
       const hash = tokenHash(token);
       const claimed = db()
         .prepare(
-          "UPDATE life SET token_hash = ?, deadline = NULL, check_inflight = 1 WHERE user_id = ? AND state = 'active' AND next_check <= ?",
+          "UPDATE life SET token_hash = ?, deadline = NULL, check_inflight = 1 WHERE user_id = ? AND state = 'active' AND next_check <= ? AND check_failed_at IS NULL AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
         )
-        .run(hash, check.user_id, now);
+        .run(hash, check.user_id, now, owner);
       if (!claimed.changes) continue;
       try {
         await deliver({
@@ -165,18 +174,21 @@ export async function tick(
           subject: "Nachklang: Bitte bestätige, dass es dir gut geht",
           text: `Bitte bestätige innerhalb von sieben Tagen, dass du noch lebst. Ohne Bestätigung gibt Nachklang deine vorbereiteten Nachrichten zum Versand frei.\n\n${appUrl()}/confirm?token=${token}\n\nDer Link öffnet zunächst eine Bestätigungsseite. Alternativ kannst du dich im Dashboard melden.`,
         });
+        if (!owns()) return;
         const started = db()
           .prepare(
-            "UPDATE life SET state = 'awaiting', deadline = ?, check_sent_at = ?, check_inflight = NULL, check_failed_at = NULL, reminder_stage = 0 WHERE user_id = ? AND state = 'active' AND token_hash = ? AND check_inflight = 1",
+            "UPDATE life SET state = 'awaiting', deadline = ?, check_sent_at = ?, check_inflight = NULL, reminder_stage = 0 WHERE user_id = ? AND state = 'active' AND token_hash = ? AND check_inflight = 1 AND check_failed_at IS NULL AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
           )
-          .run(now + REPLY_WINDOW, now, check.user_id, hash);
+          .run(now + REPLY_WINDOW, now, check.user_id, hash, owner);
         if (started.changes) event(check.user_id, "check_sent", now);
       } catch {
+        if (!owns()) return;
         db()
           .prepare(
-            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, check_inflight = NULL, check_failed_at = ? WHERE user_id = ? AND token_hash = ?",
+            "UPDATE life SET state = 'active', next_check = ?, deadline = NULL, token_hash = NULL, check_inflight = NULL, check_failed_at = ? WHERE user_id = ? AND token_hash = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
           )
-          .run(now + 15 * 60_000, now, check.user_id, hash);
+          .run(now + 15 * 60_000, now, check.user_id, hash, owner);
+        db().prepare("UPDATE life SET check_failed_at = MAX(COALESCE(check_failed_at, 0), ?) WHERE user_id = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)").run(now, check.user_id, owner);
         event(check.user_id, "check_failed", now);
       }
     }
@@ -188,7 +200,7 @@ export async function tick(
     for (const check of reminders) {
       const stage = check.deadline! - now <= DAY ? 2 : 1;
       if ((check.reminder_stage || 0) >= stage) continue;
-      renew();
+      if (!renew()) return;
       try {
         await deliver({
           to: check.email,
@@ -197,22 +209,27 @@ export async function tick(
 
 Dort kannst du auch die monatliche Prüfung vollständig pausieren.`,
         });
+        if (!owns()) return;
         db()
           .prepare(
-            "UPDATE life SET reminder_stage = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ?",
+            "UPDATE life SET reminder_stage = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
           )
-          .run(stage, check.user_id, check.token_hash);
+          .run(stage, check.user_id, check.token_hash, owner);
         event(check.user_id, "reminder_sent", now);
       } catch {
+        if (!owns()) return;
         // A known delivery problem must not release personal messages.
         const stopped = db()
           .prepare(
-            "UPDATE life SET state = 'disabled', deadline = NULL, next_check = NULL, token_hash = NULL, check_failed_at = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ?",
+            "UPDATE life SET state = 'disabled', deadline = NULL, next_check = NULL, token_hash = NULL, check_failed_at = ? WHERE user_id = ? AND state = 'awaiting' AND token_hash = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
           )
-          .run(now, check.user_id, check.token_hash);
-        if (stopped.changes) event(check.user_id, "reminder_failed", now);
+          .run(now, check.user_id, check.token_hash, owner);
+        // Preserve a concurrent pause/confirmation, but never lose its unresolved transport failure.
+        const recorded = db().prepare("UPDATE life SET check_failed_at = MAX(COALESCE(check_failed_at, 0), ?) WHERE user_id = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)").run(now, check.user_id, owner);
+        if (stopped.changes || recorded.changes) event(check.user_id, "reminder_failed", now);
       }
     }
+    if (!owns()) return;
     db().transaction(() => {
       const expired = db()
         .prepare(
@@ -234,15 +251,16 @@ Dort kannst du auch die monatliche Prüfung vollständig pausieren.`,
       )
       .all(new Date(now).toISOString().slice(0, 10)) as MessageRow[];
     for (const message of messages) {
-      renew();
+      if (!renew()) return;
       const claimed = db()
         .prepare(
-          "UPDATE message SET status = 'sending' WHERE id = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM life WHERE user_id = message.user_id AND state = 'released')",
+          "UPDATE message SET status = 'sending', dispatch_owner = ? WHERE id = ? AND status = 'pending' AND ready = 1 AND revision = ? AND payload = ? AND EXISTS (SELECT 1 FROM life WHERE user_id = message.user_id AND state = 'released' AND check_failed_at IS NULL) AND EXISTS (SELECT 1 FROM user WHERE id = message.user_id AND emailVerified = 1) AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner=?)",
         )
-        .run(message.id);
+        .run(owner, message.id, message.revision, message.payload, owner);
       if (!claimed.changes) continue;
       try {
-        const payload = decrypt<Payload>(message.payload);
+        const current = db().prepare("SELECT payload FROM message WHERE id = ? AND status = 'sending'").get(message.id) as { payload: string };
+        const payload = decrypt<Payload>(current.payload);
         const sender = db()
           .prepare("SELECT name FROM user WHERE id = ?")
           .get(message.user_id) as { name: string };
@@ -252,22 +270,25 @@ Dort kannst du auch die monatliche Prüfung vollständig pausieren.`,
           messageId: `<${message.id}@${new URL(appUrl()).hostname}>`,
           text: `${payload.body}\n\n—\nDiese Nachricht wurde von ${sender.name} bei Nachklang hinterlegt. Der Versand wurde durch eine ausgebliebene Lebensbestätigung ausgelöst; dies ist keine amtliche Bestätigung eines Todesfalls.`,
         });
+        if (!owns()) return;
         db()
           .prepare(
-            "UPDATE message SET status = 'sent', sent_at = ? WHERE id = ?",
+            "UPDATE message SET status = 'sent', sent_at = ? WHERE id = ? AND status = 'sending' AND dispatch_owner = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner = ?)",
           )
-          .run(now, message.id);
+          .run(now, message.id, owner, owner);
         event(message.user_id, "message_sent", now);
-      } catch {
+      } catch (error) {
+        if (!owns()) return;
+        const failure = mailFailure(error);
         db()
-          .prepare("UPDATE message SET status = 'failed' WHERE id = ?")
-          .run(message.id);
+          .prepare("UPDATE message SET status = 'failed', failure_kind = ?, failure_reason = ? WHERE id = ? AND status = 'sending' AND dispatch_owner = ? AND EXISTS (SELECT 1 FROM worker WHERE id=1 AND lease_owner = ?)")
+          .run(failure.kind, failure.reason, message.id, owner, owner);
         event(message.user_id, "message_failed", now);
       }
     }
   } finally {
     db()
-      .prepare("UPDATE worker SET last_tick = ?, lease_until = 0 WHERE id = 1")
-      .run(now);
+      .prepare("UPDATE worker SET last_tick = ?, lease_until = 0, lease_owner = NULL WHERE id = 1 AND lease_owner = ?")
+      .run(now, owner);
   }
 }

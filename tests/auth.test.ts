@@ -226,7 +226,16 @@ test("real auth, owner isolation, CSRF, check link and SMTP delivery", async () 
     await GET(request("/api/dashboard", undefined, cookie))
   ).json();
   assert.equal(snapshot.messages.length, 1);
+  assert.equal(snapshot.messages[0].ready, 0, "even a forged autosave cannot arm");
   assert.equal(snapshot.life.state, "disabled");
+  const review = await POST(request("/api/dashboard", { action: "review_release", id }, cookie));
+  assert.equal(review.status, 200, "server builds an explicit release review");
+  const reviewed = await review.json();
+  assert.equal(reviewed.recipientEmail, "ada@example.test");
+  assert.equal(reviewed.checkState, "disabled");
+  const { POST: release } = await import("../app/api/messages/release/route");
+  assert.equal((await release(request("/api/messages/release", { action: "release", id, token: reviewed.token, confirmed: true }, cookie))).status, 200);
+  assert.equal((await release(request("/api/messages/release", { action: "release", id, token: reviewed.token, confirmed: true }, cookie))).status, 200, "same confirmation is idempotent");
   assert.equal(
     (
       await POST(
@@ -261,11 +270,15 @@ test("real auth, owner isolation, CSRF, check link and SMTP delivery", async () 
     ).status,
     400,
   );
-  assert.equal(
-    (await POST(request("/api/dashboard", { action: "confirm" }, cookie)))
-      .status,
-    200,
-  );
+  assert.equal((await POST(request("/api/dashboard", { action: "confirm" }, cookie))).status, 400, "disabled checks cannot bypass readiness with confirm");
+  db().prepare("UPDATE worker SET last_tick = ?").run(Date.now());
+  const activationReview = await POST(request("/api/dashboard", { action: "review_activation" }, cookie));
+  assert.equal(activationReview.status, 200);
+  const activation = await activationReview.json();
+  assert.equal(activation.releasedCount, 1);
+  assert.equal(activation.received, false);
+  assert.equal((await POST(request("/api/dashboard", { action: "activate", token: activation.token, confirmed: true }, cookie))).status, 400, "SMTP health does not substitute for receipt");
+  assert.equal((await POST(request("/api/dashboard", { action: "activate", token: activation.token, confirmed: true, bypassReceipt: true }, cookie))).status, 200);
   const now = Date.now();
   db()
     .prepare("UPDATE life SET next_check = ? WHERE user_id = ?")

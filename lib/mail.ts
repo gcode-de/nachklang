@@ -7,6 +7,12 @@ export type Mail = {
   text: string;
   messageId?: string;
 };
+export function mailFailure(error: unknown): {kind: "rejected" | "unknown"; reason: string} {
+  const value = error as { responseCode?: number; command?: string; code?: string } | null;
+  // Only explicit SMTP negative replies or known pre-handoff failures prove nonacceptance.
+  if ((typeof value?.responseCode === "number" && value.responseCode >= 400 && value.responseCode < 600 && ["CONN", "AUTH", "MAIL FROM", "RCPT TO", "DATA"].includes(value.command || "")) || ["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "NK_NOT_ATTEMPTED", "NK_REJECTED"].includes(value?.code || "")) return {kind:"rejected",reason:"Keine SMTP-Annahme: Verbindung nicht begonnen oder ausdrücklich abgelehnt."};
+  return {kind:"unknown",reason:"SMTP-Annahme nicht sicher feststellbar; keine automatische Wiederholung."};
+}
 export async function sendMail(mail: Mail) {
   try {
     await deliverMail(mail);
@@ -24,7 +30,7 @@ export async function sendMail(mail: Mail) {
 }
 async function deliverMail(mail: Mail) {
   if (!process.env.SMTP_HOST || !process.env.SMTP_FROM) {
-    throw new Error("SMTP_HOST und SMTP_FROM müssen eingerichtet sein.");
+    throw Object.assign(new Error("SMTP_HOST und SMTP_FROM müssen eingerichtet sein."), {code: "NK_NOT_ATTEMPTED"});
   }
   const port = Number(process.env.SMTP_PORT || 587);
   const transport = nodemailer.createTransport({
@@ -45,7 +51,7 @@ async function deliverMail(mail: Mail) {
       ...mail,
     });
     if (!result.accepted?.length)
-      throw new Error("SMTP hat die Nachricht nicht angenommen.");
+      throw Object.assign(new Error("SMTP hat die Nachricht nicht angenommen."), {code: "NK_REJECTED"});
   } finally {
     transport.close();
   }
